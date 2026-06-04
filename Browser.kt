@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.view.*
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
+import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.widget.*
 import androidx.appcompat.app.AlertDialog
@@ -225,7 +226,8 @@ class MainActivity : AppCompatActivity() {
         topBar.addView(urlBar,     LinearLayout.LayoutParams(0, -2, 1f))
         topBar.addView(btnMenu,    lp(44.dp, 44.dp))
 
-        val gecko = GeckoView(this).apply { setSession(session) }
+        val gecko = GeckoView(this)
+        gecko.setSession(session)
 
         root.addView(topBar,       lp(-1, -2))
         root.addView(progressBar,  lp(-1, 4))
@@ -239,7 +241,8 @@ class MainActivity : AppCompatActivity() {
         session.navigationDelegate = object : GeckoSession.NavigationDelegate {
             override fun onLocationChange(
                 s: GeckoSession, url: String?,
-                perms: List<ContentPermission>
+                perms: List<GeckoSession.PermissionDelegate.ContentPermission>,
+                hasUserGesture: Boolean
             ) {
                 currentUrl = url ?: ""
                 runOnUiThread { urlBar.setText(currentUrl) }
