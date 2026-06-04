@@ -1,0 +1,228 @@
+name: Build Forge Browser
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Fetch latest GeckoView version
+        id: gecko
+        run: |
+          METADATA=$(curl -sf "https://maven.mozilla.org/maven2/org/mozilla/geckoview/geckoview/maven-metadata.xml" || echo "")
+          if [ -z "$METADATA" ]; then
+            GECKO_VERSION="147.0.20260212191108"
+          else
+            GECKO_VERSION=$(echo "$METADATA" | grep -oP '(?<=<release>)[^<]+' | head -1)
+            if [ -z "$GECKO_VERSION" ]; then
+              GECKO_VERSION=$(echo "$METADATA" | grep -oP '(?<=<latest>)[^<]+' | head -1)
+            fi
+          fi
+          echo "GeckoView version: $GECKO_VERSION"
+          echo "version=$GECKO_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Generate project structure
+        env:
+          GECKO_VERSION: ${{ steps.gecko.outputs.version }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          PKG=app/src/main/java/com/forge/browser
+          mkdir -p $PKG
+          mkdir -p app/src/main/res/values
+          mkdir -p gradle/wrapper
+
+          cp Browser.kt $PKG/
+
+          cat > settings.gradle.kts << 'EOF'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories { google(); mavenCentral(); maven { url = uri("https://maven.mozilla.org/maven2") } }
+          }
+          rootProject.name = "Forge"
+          include(":app")
+          EOF
+
+          cat > build.gradle.kts << 'EOF'
+          plugins {
+              id("com.android.application") version "8.9.1" apply false
+              id("org.jetbrains.kotlin.android") version "2.2.0" apply false
+          }
+          EOF
+
+          cat > app/build.gradle.kts << EOF
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace  = "com.forge.browser"
+              compileSdk = 36
+
+              defaultConfig {
+                  applicationId = "com.forge.browser"
+                  minSdk        = 26
+                  targetSdk     = 36
+                  versionCode   = ${BUILD_NUMBER}
+                  versionName   = "${BUILD_NUMBER}"
+              }
+
+              buildTypes {
+                  release { isMinifyEnabled = false; isShrinkResources = false }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+
+              splits {
+                  abi {
+                      isEnable       = true
+                      reset()
+                      include("arm64-v8a")
+                      isUniversalApk = false
+                  }
+              }
+          }
+
+          dependencies {
+              implementation("org.mozilla.geckoview:geckoview:${GECKO_VERSION}")
+              implementation("androidx.core:core-ktx:1.15.0")
+              implementation("androidx.appcompat:appcompat:1.7.0")
+              implementation("com.google.android.material:material:1.12.0")
+          }
+          EOF
+
+          cat > gradle.properties << 'EOF'
+          android.useAndroidX=true
+          android.enableJetifier=true
+          org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=512m
+          kotlin.code.style=official
+          android.suppressUnsupportedCompileSdk=36
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <application
+                  android:allowBackup="false"
+                  android:label="@string/app_name"
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher_round"
+                  android:theme="@style/AppTheme"
+                  android:hardwareAccelerated="true"
+                  android:largeHeap="true">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                      <intent-filter>
+                          <action android:name="android.intent.action.VIEW" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                          <category android:name="android.intent.category.BROWSABLE" />
+                          <data android:scheme="http" />
+                          <data android:scheme="https" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/res/values/strings.xml << 'EOF'
+          <resources><string name="app_name">Forge</string></resources>
+          EOF
+
+          cat > app/src/main/res/values/themes.xml << 'EOF'
+          <resources>
+              <style name="AppTheme" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+                  <item name="android:windowBackground">#121212</item>
+                  <item name="android:statusBarColor">#121212</item>
+                  <item name="android:navigationBarColor">#1E1E1E</item>
+                  <item name="android:windowLightStatusBar">false</item>
+                  <item name="colorPrimary">#1E1E1E</item>
+                  <item name="colorSurface">#1E1E1E</item>
+              </style>
+          </resources>
+          EOF
+
+      - name: Generate launcher icons
+        run: |
+          pip install Pillow --quiet
+          python3 << 'PYEOF'
+          from PIL import Image, ImageDraw
+          import os
+          def make_icon(size):
+              img = Image.new('RGBA', (size, size), (18,18,18,255))
+              d = ImageDraw.Draw(img)
+              m = size//8; sw = max(2, size//22)
+              # Forge: anvil-like shape
+              cx = size//2; cy = size//2
+              d.rounded_rectangle([m, m, size-m, size-m], radius=size//6,
+                                  outline=(255,255,255,200), width=sw)
+              # F letter
+              tx = size//3; ty = size//4; tw = size//2; th = size//2
+              d.line([(tx,ty),(tx,ty+th)], fill=(255,255,255,255), width=sw+1)
+              d.line([(tx,ty),(tx+tw//2+2,ty)], fill=(255,255,255,255), width=sw+1)
+              d.line([(tx,cy),(tx+tw//3,cy)], fill=(255,255,255,255), width=sw+1)
+              return img
+          for density, s in {'mdpi':48,'hdpi':72,'xhdpi':96,'xxhdpi':144,'xxxhdpi':192}.items():
+              path = f'app/src/main/res/mipmap-{density}'
+              os.makedirs(path, exist_ok=True)
+              icon = make_icon(s)
+              icon.save(f'{path}/ic_launcher.png')
+              icon.save(f'{path}/ic_launcher_round.png')
+          print("Icons done.")
+          PYEOF
+
+      - name: Create Gradle Wrapper
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y gradle
+          gradle wrapper --gradle-version=8.11.1 --distribution-type=bin
+          chmod +x gradlew
+
+      - name: Set Android SDK path
+        run: echo "sdk.dir=/usr/local/lib/android/sdk" > local.properties
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Bundle release
+        run: |
+          mkdir -p Forge-release/.github/workflows
+          cp app/build/outputs/apk/debug/app-arm64-v8a-debug.apk Forge-release/Forge.apk
+          cp Browser.kt Forge-release/
+          cp .github/workflows/build.yml Forge-release/.github/workflows/ 2>/dev/null || true
+          echo "Build:      #${{ github.run_number }}"           > Forge-release/BUILD_INFO.txt
+          echo "GeckoView:  ${{ steps.gecko.outputs.version }}" >> Forge-release/BUILD_INFO.txt
+          echo "Commit:     ${{ github.sha }}"                  >> Forge-release/BUILD_INFO.txt
+          echo "Timestamp:  $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> Forge-release/BUILD_INFO.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Forge-${{ github.run_number }}
+          path: Forge-release/
+          retention-days: 30
